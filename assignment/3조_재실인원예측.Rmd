@@ -1,0 +1,181 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+#로지스틱 회귀분석을 통한 재실여부 예측
+```
+목표 : 로지스틱 회귀분석을 통해 재실여부를 예측하여, 모델의 accuracy값을 98% 이상 만들기
+```
+--------------------------------
+
+###0. 데이터 불러오기 및 라이브러리 세팅
+
+```{r}
+library(lubridate)
+library(MASS)
+library(dplyr)
+library(caret)
+library(ggplot2)
+
+train <- read.csv("https://github.com/otzslayer/KHURStudy/raw/master/2016%20Big%20Leader%204th/Data/occupancy_train.csv")
+test <- read.csv("https://github.com/otzslayer/KHURStudy/raw/master/2016%20Big%20Leader%204th/Data/occupancy_test.csv")
+```
+
+----------------------------------------
+
+###1. 데이터 시각화를 통한 탐색
+먼저, 데이터는 `Date(날짜)`, `Temperature(온도)`, `Humidity(습도)`, `HumidityRate(절대습도)`, `CO2(이산화탄소량)`, `Light(조도)`로 구성되어있다. 재실인원을 예측하는 회사데이터라는 점을 참고했을때, 출근일, 출근시간이 날짜에서 뽑아낼 수 있는 재실예측 수치라고 생각했다. 실제로 date에는 2015년 2월의 기록만 담겨있기 때문에 이용할 수 있는 요소는 `Day`와 `Time`요소였다. 일반적으로 주말엔 출근을 하지 않으니 요일별로 재실여부를 시각화 해보기로 했다.
+
+```{r}
+train$date = as.POSIXct(train$date)
+test$date = as.POSIXct(test$date)
+train$Occupancy = as.factor(train$Occupancy)
+test$Occupancy = as.factor(test$Occupancy)
+
+ggplot(train, aes(x = wday(date), fill = Occupancy)) +
+  geom_bar(stat="count", position=position_dodge())
+```
+
+위의 그래프를 통해 **1(일요일)과 7(토요일)**의 값에 재실인원이 없다는 것을 확인할 수 있었다. 주 5일 근무가 확실하게 지켜지고 있는 것 같다. 다음으로 시간요소를 활용하여 출근시간과 퇴근시간을 추측해보기로 했다.
+
+```{r}
+ggplot(train, aes(x = hour(date), fill = Occupancy)) +
+  geom_bar(stat="count", position=position_dodge())
+```
+
+위의 그래프를 통해 **8시 출근 6시 퇴근**하는 회사라는 것을 알 수 있었다. 7시와 18시 이후에 보이는 데이터는 조금 일찍 출근했거나, 조금 늦게 퇴근한 사람으로 보이는데 이들까지 모두 조정하면 모델이 과적합 될 것같아서 추측된 출근시간만 기준으로 칼럼을 만들었다.
+
+---------------------------------------
+
+###2. 변수조정
+
+```{r}
+train_2 = train %>%
+  mutate(weekday = ifelse(wday(date) > 1 & wday(date) < 7, 1, 0)) %>%
+  mutate(worktime = ifelse(hour(date) >= 7 & hour(date) <= 17, 1, 0))
+
+test_2 = test %>%
+  mutate(weekday = ifelse(wday(date) > 1 & wday(date) < 7, 1, 0)) %>%
+  mutate(worktime = ifelse(hour(date) >= 7 & hour(date) <= 17, 1, 0))
+```
+`weekday`변수엔 주중에 출근할 경우 1, 아니면 0으로 코딩하였고, `worktime`엔 업무시간일 경우 1, 아니면 0으로 코딩하였다.
+
+-----------------------------------
+
+###3. 공선성 이슈
+
+변수간의 상관관계가 높을 경우 모델의 성능이 떨어질 수 있으므로 변수간 공선성을 확인해보았다.
+
+```{r}
+train %>% 
+  select(-Occupancy, -date) %>%
+  cor()
+```
+그 결과 `Humidity`변수와 `HumidityRatio`변수의 높은 상관관계를 알 수 있었다. 이름부터가 비슷해서 의심스러웠는데 검색해보니 **상대습도**와 **절대습도**라고 한다. 이 중 어떤 변수가 더 설명력이 높은지 보기 위해 두 변수를 시각화 시켜보았다.
+
+```{r}
+ggplot(train, aes(x = Occupancy, y = Humidity, color = Occupancy)) +
+  geom_boxplot()
+
+ggplot(train, aes(x = Occupancy, y = HumidityRatio, color = Occupancy)) +
+  geom_boxplot()
+```
+
+재실인 경우, 재실이 아닌 경우에 확실히 차이가나는 것은 `HumidityRatio(절대습도)`이므로 습도값을 버리고 절대습도 값으로 모델을 구성하기로 했다.
+
+------------------------------------------
+
+###4. 모델 구성
+
+```{r}
+ model = glm(Occupancy ~ Temperature + Light + CO2 + HumidityRatio + weekday + worktime, data = train_2, family = "binomial")
+ predict_occupancy = predict(model, test_2, type = "response")
+ head(predict_occupancy)
+ binary_predict_occupancy = ifelse(predict_occupancy > 0.5, 1, 0)
+
+ confusionMatrix(binary_predict_occupancy, test_2$Occupancy, positive = "1")
+```
+해당 모델에서 accuracy값은 99.1%로 성능이 향상됨을 알 수 있었다. 특히 이 데이터에서는 재실이라고 예측했는데 재실이 아니었을 경우보다 **재실이 아니라고 예측했는데 재실일 경우**, 즉, false positive인 경우 문제가 생긴다. 재실이 아니라고 예측해서 모든 불을 소등하거나, 문을 잠궈버리는등의 조치가 나타났을때, 일하던 사람이 갇혀버릴수도 있고, 작업을 중단해야 할 수도 있기 때문이다. 그래서 재실이 아닐경우 재실이 아니라고 예측한 비율인 `specification`을 보아야 한다. 이는 **99.3**%로 accuracy값보다 조금 높게나타나서 괜찮은 모델로 보인다.
+
+------------------------------------------
+
+###5. 성능 추가개선
+
+좀 더 모델의 성능을 개선하고자 출근 시간 이후에 재실여부, 즉 야근으로 보이는 행동을 추가하여 모델을 개선하고자 하였다.
+
+```{r}
+overwork = train %>%
+  filter(hour(date) == 18)
+
+ggplot(overwork, aes(x = minute(date), y = Light,color = Occupancy)) +
+  geom_point()
+```
+
+19시 이후에 야근하는 케이스는 이상치로 판단하고 18시 데이터만 국한하여 분 단위로 쪼개서 보기 위해 데이터를 시각화 한 결과, 재실중일 경우 `Light`의 값이 400이상으로 일반적으로 사무실에서 볼 수 있는 조도값을 확인할 수 있었다. 이를 통해 2가지를 확인해보고자 했다.
+
+1. 18시부터 19시 사이에 조도값이 400이상일 경우 야근 or 업무를 마무리하는 사람이 있다.
+2. 18시에 퇴근이어서 대부분 10분이내에 업무를 마무리하고 퇴근하는 것으로 보인다.
+
+이를 확인하기 위해 변수를 `overwork`라는 변수를 만들어서 새로운 모델을 만들기로 했다.
+
+```{r}
+train_3 = train_2 %>%
+  mutate(nightwork = ifelse(hour(date) == 18 & Light > 400, 1, 0))
+
+test_3 = test_2 %>%
+  mutate(nightwork = ifelse(hour(date) == 18 & Light > 400, 1, 0))
+model_2 = glm(Occupancy ~ Temperature + Light + CO2 + HumidityRatio + weekday + worktime + nightwork, data = train_3, family = "binomial")
+
+predict_occupancy = predict(model_2, test_3, type = "response")
+binary_predict_occupancy = ifelse(predict_occupancy > 0.5, 1, 0)
+
+confusionMatrix(binary_predict_occupancy, test_3$Occupancy, positive = "1")
+```
+하지만 결과값은 **96.04%**로 현저하게 예측률이 떨어지는 것을 확인했다. 과적합이 발생한 것 같다. test데이터를 확인했을 때, 18시 데이터에서 조도가 400이상일 경우 하나의 케이스를 빼고 모두 재실중이었는데 왜 예측률이 떨어지는지 모르겠다.
+
+---------------------------------
+
+###6. 이상치 제거
+
+두번째 모델을 버리고, 더 적합한 설명을 하기보다 아예 이상치를 제거하는 방법을 써보기로 했다.
+
+```{r}
+par(mfrow = c(2,2))
+plot(model)
+```
+
+4번째 그래프의 y축이 `residual`이 아니라 `pearson residual`이라 이상해서 첫 번째 그래프를 보니 `residual`값은 절대값 3이내에서 대부분 머무는 것을 확인할 수 있었다. 따라서 3으로 기준하기보다 **-20을 기록하는 값을 제거**하고, **leverage값이 0.05이상인 값을 제거**하여 이상치를 제거하였다.
+
+```{r}
+leverage = hatvalues(model)
+leverage_point = which(leverage > 0.05)
+stdlier = studres(model)
+outliers = which(stdlier < -20)
+
+train_5 = train_2[-leverage_point, ]
+train_5 = train_5[-outliers, ]
+
+model_4 = glm(Occupancy ~ Temperature + Light + CO2 + HumidityRatio + weekday + worktime, data = train_5, family = "binomial")
+
+# 모델평가
+predict_occupancy = predict(model_4, test_2, type = "response")
+binary_predict_occupancy = ifelse(predict_occupancy > 0.5, 1, 0)
+
+confusionMatrix(binary_predict_occupancy, test_2$Occupancy, positive = "1")
+```
+이상치를 제거한 후 만든 모델의 `accuracy` 값은 **99.3%**로 .2% 상승한 것을 알 수 있었다. 하지만 `specification`값은 **99.38%**로 재실이 아닐 경우를 예측하는 성능이 증가하지 않아 뚜렷한 성능증가라고 보기는 어렵다. `Sensitivity`의 값이 **99.1% -> 99.3%**로 증가하여 재실이라고 예측한 값의 정확도가 높아졌다. 이는 모델이 재실이라고 예측했을때, 건물이 소등되지 않아 비용이 발생할 텐데, 이 오류를 줄여 실제로 재실인원이 없을 때 쓸모없이 버려질 수 있는 비용을 줄일 수 있을것이라 생각한다.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
