@@ -1,0 +1,90 @@
+#의사결정나무 모델을 통해 알파벳 예측하기
+
+```
+목표 : 의사결정나무 모델중 RandomForest와 xgboost를 통해 알파벳을 예측
+```
+
+--------------------------
+
+###0. 데이터 및 라이브러리 불러오기
+
+```{r}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(xgboost)
+
+letter <- read.csv("https://github.com/otzslayer/KHURStudy/raw/master/2016%20Big%20Leader%204th/Data/letter.csv")
+head(letter)
+
+set.seed(123)
+trainIdx <- sort(sample(1:nrow(letter), size = 0.7 * nrow(letter)))
+letterTrain <- letter[trainIdx, ]
+letterTest <- letter[-trainIdx, ]
+accuracy <- function(actual, predict){
+  sum(actual == predict) / length(actual)
+}
+```
+
+20000개의 데이터에서 70%를 트레인데이터로, 30%는 테스트 데이터로 활용하였다. 또한 0과 1의 케이스가 아닌 26개의 케이스의 정확도를 측정하는 것이므로 `confusionMatrix`보다는 `accuracy`값만 확인할 수 있도록 함수를 활용하였다.
+
+---------------------------
+
+###1. CART알고리즘을 통한 기본모델
+
+```{r}
+## CART 알고리즘을 통한 기본 의사결정나무모델 만들기
+letterTree = rpart(letter ~ ., data = letterTrain, method = "class")
+predictLetter = predict(letterTree, letterTest, type = "class")
+
+accuracy(letterTest$letter, predictLetter)
+```
+
+`CART`알고리즘을 사용하여 의사결정모델을 만든 결과 48.5%가 나왔다. 정확도가 너무 낮기때문에 수업때 배운 `RandomForest`와 `xgboost`를 통해 모델을 개선해보기로 하였다.
+
+-----------------------------
+
+###2. RandomForest
+
+```{r}
+## Randomforest를 통해 모델 일반화
+RF_letter = randomForest(letter ~ ., data = letterTrain, ntree = 500, inportance = TRUE,
+                         replace = FALSE, proximity = TRUE)
+varImpPlot(RF_letter)
+pred_RF_letter = predict(RF_letter, letterTest)
+accuracy(letterTest$letter, pred_RF_letter) 
+```
+
+다른 파라미터는 건들이지 않고 `ntree`를 조작하여 반복횟수만 조절하였다. 트레이닝 데이터가 14000개이기 때문에, 모델을 만드는데 오랜 시간이 걸려 **500번**으로 제한하였다. 그 결과 **96.05%**로 CART기본 알고리즘에 비해 매우 높은 수치가 나온 것을 확인할 수 있었다.
+
+------------------------------
+
+###3. Xgboost
+좀 더 정교한 튜닝작업을 위해 `xgboost`를 사용하여 정확도를 더 올려보기로 하였다.
+
+```{r}
+trainLabel = as.numeric(letterTrain$letter) - 1
+testLabel = as.numeric(letterTest$letter) - 1
+trainMat = model.matrix( ~ ., data = letterTrain[ , -1])
+testMat = model.matrix( ~ ., data = letterTest[ , -1])
+
+letter_xgboost = xgboost(data = trainMat, label = trainLabel, max.depth = 9,
+                         eta = 0.3, nrounds = 35, subsample = 1, num_class = 26, objective = "multi:softmax",
+                         eval_metric = "merror")
+
+xgboost_pred = predict(letter_xgboost, testMat)
+accuracy(testLabel, xgboost_pred)
+```
+
+`학습률`은 `0.3`에서 가장 높은 정확도를 보였다. +-0.01씩 조작해보았지만 과소적합, 과적합이 나타나는 것으로 보였다. `반복횟수`는 20부터 시작하여 계속 올려나갔으나 `35`에서 더 이상 정확도가 오르지 않는 모습을 확인할 수 있었다. `트리깊이`의 경우 위의 RandomForest 그래프에서 영향을 크게주는 요인이 상위 9개였기 때문에 9개로 깊이를 설정하니 정확도가 조금 상승하는 것을 확인할 수 있었다. 그 결과 **95.5%**의 정확도까지 끌어올렸으나, RandomForest의 결과를 능가할만한 모델을 찾지는 못했다.
+
+
+
+
+
+
+
+
+
+

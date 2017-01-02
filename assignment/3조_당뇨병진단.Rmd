@@ -1,0 +1,145 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+#3조 당뇨병 예측
+```
+목표 : knn모델링을 통해 당뇨병 예측 확률을 높여보자
+```
+
+--------------------------------------
+
+###0. 데이터 불러오기 및 라이브러리 세팅
+
+```{r}
+library(MASS)
+library(dplyr)
+library(class)
+library(caret)
+library(ggplot2)
+
+train = Pima.tr
+test = Pima.te
+```
+
+-----------------------------------------
+
+###1. 기본 모델 제작
+데이터를 확인하는 중에 `train`과 `test`데이터에서 na값을 발견할 수 있었다. 이를 제거하지 않고는 모델링을 할 수가 없어서 모든 결측값을 제외한 데이터셋을 만들었다. 이 데이터셋에서 다시 예측하고싶은 집합인 `type`을 따로 분리하여 집합세트를 만들었다. 이 기본 데이터셋을 통해 knn모델을 만들어보았다.
+
+```{r}
+# 결측값 제거
+na_del_train = train
+na_del_test = test
+
+# 데이터의 집합 분리
+train_label = train[ ,8]
+test_label = test[ ,8]
+
+# 집합을 제외한 데이터셋
+train = train[ ,-8]
+test = test[ ,-8]
+
+predicted_diabete = knn(train = train, test = test, cl = train_label, k = 17)
+confusionMatrix(predicted_diabete, test_label, positive = "Yes")
+```
+
+k값은 **train데이터 300개의 제곱근**에 근접한 17과 18중 홀수인 **17**을 선택하였다. 이를 통해 나온 accuracy값은 **76.81%**로 매우 낮은 수치를 기록했다. 그래도 `specification`값이 **90%**에 근접하기 때문에 아주 나쁘게 볼 수많은 없다고 생각했다. 
+
+------------------------------------
+
+###2. 모델 개선
+모델을 개선하기 위해 먼저 데이터 군집에 나쁜 영향을 줄것같은 요소들을 찾아보려고 했다. 특정 피쳐가 각 집단에서 고르게 분포할 경우 집단을 예측하는데 나쁜 영향을 줄 것이라고 생각했다. 그래서 집단간 차이가 큰 피쳐들을 제외하고 모델을 만들어보기로 했다. 시각화 한 요소들 중에 `skin`, `bmi`, `ped`의 차이가 두드러지지 않았는데 `ped`의 경우 데이터값 자체가 매우 작기 때문에 시각화에서 큰 차이를 보이지 않았을 것이라고 생각했다. 그래서 `skin`과 `bmi`피쳐를 제외하고 다시 모델을 돌려보았다.
+
+```{r}
+ggplot(data = na_del_train, aes(x = type, y = skin, fill = type)) +
+  geom_boxplot()
+
+ggplot(data = na_del_train, aes(x = type, y = bmi, fill = type)) +
+  geom_boxplot()
+```
+---------------------------------------
+
+```{r}
+refine_train = train[ , -c(4,5)]
+refine_test = test[ , -c(4,5)]
+
+predicted_diabete = knn(train = refine_train, test = refine_test, cl = train_label, k = 17)
+confusionMatrix(predicted_diabete, test_label, positive = "Yes")
+```
+
+그 결과 `accuracy`값은 76.81%에서 **78.61%**로 상승하였고 `specification`값 또한 90%에서 **92.8%**로 상승하였다. 
+
+-------------------------------------------
+
+###3. normalize를 통한 추가개선
+
+위에서 만든 모델을 `normalize`한 데이터로 다시 돌리면 더 높은 예측률이 나올 것 같아서 `refine_train`과 `refine_test`를 통합하여 `normalize`한 뒤 다시 해당 모델을 돌려보았다.
+
+```{r}
+### normalization 시도
+normalize <- function(x) {
+  return((x - min(x))/(max(x) - min(x)))
+}
+
+# 전체데이터로 변경
+total_data = rbind(refine_train, refine_test)
+
+# normalize 적용
+normalize_total_data = as.data.frame(lapply(total_data, normalize))
+
+# 트레이닝 / 테스트로 분리
+normalize_train = normalize_total_data[1:200, ]
+normalize_test = normalize_total_data[201:nrow(normalize_total_data), ]
+
+predicted_diabete = knn(train = normalize_train, test = normalize_test, cl = train_label, k = 17)
+confusionMatrix(predicted_diabete, test_label, positive = "Yes")
+```
+
+하지만 결과는 75.6%로 확연히 줄어드는 것을 알 수 있었다. `scaling`도 시도해보았지만 `normalize`했을 때보다 더욱 떨어져서 작성하지 않았다.
+
+-------------------------------------------
+
+###5. K값 찾기
+
+따라서 `normalize`와 `scaling`을 하지 않은 상태로 최적의 K값을 찾아 모델을 완성시켜보기로 했다.
+
+```{r}
+Result <- data.frame(k = NULL, Accuracy = NULL, Sensitivity = NULL,
+                     Specificity = NULL, PosPredValue = NULL, NegPredValue = NULL)
+sequence <- seq(11, 50, by = 2)
+for (i in sequence) {
+  predicted_diabete <- knn(train = refine_train, test = refine_test,
+              cl = train_label, k = i)
+  confMat <- confusionMatrix(predicted_diabete, test_label)
+  currentResult <- data.frame(k = i, Accuracy = confMat$overall[1],
+                              Sensitivity = confMat$byClass[1],
+                              Specificity = confMat$byClass[2],
+                              PosPredValue = confMat$byClass[3], 
+                              NegPredValue = confMat$byClass[4])
+  Result <- bind_rows(Result, currentResult)
+}
+Result
+```
+
+위의 수치를 보았을때 가장 높은 `accuracy`는 k값이 41일때, **80.42%**로 가장 높았다. 또한 `specification`값이 **94.17%**로 크게 증가하여 기본 모델보다 성능이 많이 향상된 것을 확인할 수 있었다.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

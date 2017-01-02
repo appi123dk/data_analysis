@@ -136,6 +136,7 @@ outliers = which(stdlier < -20)
 train_5 = train_2[-leverage_point, ]
 train_5 = train_5[-outliers, ]
 
+
 model_4 = glm(Occupancy ~ Temperature + Light + CO2 + HumidityRatio + weekday + worktime, data = train_5, family = "binomial")
 
 # 모델평가
@@ -145,3 +146,4 @@ binary_predict_occupancy = ifelse(predict_occupancy > 0.5, 1, 0)
 
 confusionMatrix(binary_predict_occupancy, test_2$Occupancy, positive = "1")
 
+## 로지스틱 회기에서는 stdres를 쓰는것이 좋음
